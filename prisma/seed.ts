@@ -4,6 +4,7 @@ import {
   AssetType,
   RiskLevel,
   Severity,
+  IncidentStatus,
   ReportStatus,
   Priority,
   WorkOrderStatus,
@@ -179,7 +180,100 @@ async function main() {
     });
   }
 
-  console.log('Seed complete — Meridian tenant, 8 assets, 5 alerts, 5 reports, 6 projects, 8 work orders');
+  // ---------------------------------------------------------------------
+  // Rich history for the 3 highest-risk assets (detail-page nested data)
+  // ---------------------------------------------------------------------
+  const assetId = (externalId: string) => `${externalId}-${tenant.id}`;
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+
+  // Inspections: 2-3 per high-risk asset, dated over the past year, condition trending down.
+  const inspections = [
+    // WTR-2207 — Trunk main MX-118 (CRITICAL)
+    { key: 'WTR-2207-insp-1', externalId: 'WTR-2207', inspector: 'G. Navarro', condition: 58, inspectedAt: daysAgo(330), notes: 'Acoustic survey: minor circumferential corrosion at joints 4–6. Within tolerance.' },
+    { key: 'WTR-2207-insp-2', externalId: 'WTR-2207', inspector: 'G. Navarro', condition: 47, inspectedAt: daysAgo(180), notes: 'Pressure transients increasing; two pinhole leaks repaired. Recommend leak-detection loggers.' },
+    { key: 'WTR-2207-insp-3', externalId: 'WTR-2207', inspector: 'S. Okonkwo', condition: 41, inspectedAt: daysAgo(35), notes: 'Wall-thickness below threshold over 120 m. Failure predicted ≤ 90 days. Escalate to capital replacement.' },
+    // BRG-0072 — Cedar St bridge (ELEVATED)
+    { key: 'BRG-0072-insp-1', externalId: 'BRG-0072', inspector: 'D. Walsh', condition: 71, inspectedAt: daysAgo(300), notes: 'Routine NBI inspection. Deck spalling on north approach; expansion joints serviceable.' },
+    { key: 'BRG-0072-insp-2', externalId: 'BRG-0072', inspector: 'D. Walsh', condition: 58, inspectedAt: daysAgo(75), notes: 'Tier-2 inspection: section loss on girder G3, chloride ingress. Load rating reduced. Grant-eligible.' },
+    // PMP-014 — Westbank storm pump (WATCH)
+    { key: 'PMP-014-insp-1', externalId: 'PMP-014', inspector: 'M. Okafor', condition: 74, inspectedAt: daysAgo(250), notes: 'Annual service. Pump 2 seal weeping; bearings within spec.' },
+    { key: 'PMP-014-insp-2', externalId: 'PMP-014', inspector: 'M. Okafor', condition: 66, inspectedAt: daysAgo(60), notes: 'Reduced throughput during high-flow test. Impeller wear on Pump 2; schedule rebuild before wet season.' },
+  ];
+
+  for (const ins of inspections) {
+    await prisma.inspection.upsert({
+      where: { id: ins.key },
+      update: {},
+      create: {
+        id: ins.key,
+        assetId: assetId(ins.externalId),
+        tenantId: tenant.id,
+        inspector: ins.inspector,
+        condition: ins.condition,
+        notes: ins.notes,
+        inspectedAt: ins.inspectedAt,
+      },
+    });
+  }
+
+  // Incidents: 1-2 per high-risk asset.
+  const incidents = [
+    { key: 'WTR-2207-inc-1', externalId: 'WTR-2207', title: 'Pressure-loss event, Riverside zone', severity: 'HIGH', status: 'RESOLVED', reportedAt: daysAgo(210), resolvedAt: daysAgo(209), description: 'Sudden 14 psi drop; isolated to MX-118. Two pinhole leaks clamped.' },
+    { key: 'WTR-2207-inc-2', externalId: 'WTR-2207', title: 'Discoloured water complaints (cluster of 4)', severity: 'MEDIUM', status: 'IN_PROGRESS', reportedAt: daysAgo(28), description: 'Sediment disturbance consistent with internal corrosion. Flushing scheduled.' },
+    { key: 'BRG-0072-inc-1', externalId: 'BRG-0072', title: 'Concrete spall fell to roadway below', severity: 'HIGH', status: 'OPEN', reportedAt: daysAgo(40), description: 'Fragment from north approach soffit. Netting installed pending rehab.' },
+    { key: 'PMP-014-inc-1', externalId: 'PMP-014', title: 'Pump 2 high-temperature trip', severity: 'MEDIUM', status: 'RESOLVED', reportedAt: daysAgo(55), resolvedAt: daysAgo(54), description: 'Thermal overload during storm event; restarted after cooldown, flagged for rebuild.' },
+  ];
+
+  for (const inc of incidents) {
+    await prisma.incident.upsert({
+      where: { id: inc.key },
+      update: {},
+      create: {
+        id: inc.key,
+        assetId: assetId(inc.externalId),
+        tenantId: tenant.id,
+        title: inc.title,
+        description: inc.description,
+        severity: inc.severity as Severity,
+        status: inc.status as IncidentStatus,
+        reportedAt: inc.reportedAt,
+        resolvedAt: inc.resolvedAt,
+      },
+    });
+  }
+
+  // Link AI-generated work orders to their assets so the detail page shows real work orders.
+  const workOrderAssetLinks: Record<string, string> = {
+    'AI · WTR-2207': 'WTR-2207',
+    'AI · BRG-0072': 'BRG-0072',
+  };
+  for (const [source, externalId] of Object.entries(workOrderAssetLinks)) {
+    await prisma.workOrder.updateMany({
+      where: { tenantId: tenant.id, source, assetId: null },
+      data: { assetId: assetId(externalId) },
+    });
+  }
+  // Add a dedicated work order for PMP-014 (its AI alert source isn't asset-tagged in the WO list).
+  await prisma.workOrder.upsert({
+    where: { id: 'PMP-014-wo-1' },
+    update: {},
+    create: {
+      id: 'PMP-014-wo-1',
+      tenantId: tenant.id,
+      assetId: assetId('PMP-014'),
+      title: 'Westbank pump 2 impeller rebuild',
+      department: 'Public Works',
+      priority: Priority.HIGH,
+      status: WorkOrderStatus.SCHEDULED,
+      assignee: 'M. Okafor',
+      source: 'INSP · PMP-014',
+    },
+  });
+
+  console.log(
+    'Seed complete — Meridian tenant, 8 assets, 5 alerts, 5 reports, 6 projects, 9 work orders, ' +
+      `${inspections.length} inspections, ${incidents.length} incidents`,
+  );
   console.log(`Admin login: admin@meridian.city / citypulse2026`);
   void admin;
 }

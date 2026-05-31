@@ -69,10 +69,20 @@ export class AssetsController {
   // -----------------------------------------------------------------------
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a single asset with inspections, incidents, and work orders' })
+  @ApiOperation({ summary: 'Get a single asset with inspections, incidents, work orders, and documents' })
   @ApiParam({ name: 'id', type: String })
   findById(@Request() req: any, @Param('id') id: string) {
     return this.service.findById(req.user.tenantId, id);
+  }
+
+  @Get(':id/readings')
+  @ApiOperation({
+    summary:
+      'Sensor time-series for an asset (~24 hourly points). Metric depends on asset type (pressure/vibration/cycle-time/health index). Deterministic given the asset.',
+  })
+  @ApiParam({ name: 'id', type: String })
+  getReadings(@Request() req: any, @Param('id') id: string) {
+    return this.service.getReadings(req.user.tenantId, id);
   }
 
   @Post()

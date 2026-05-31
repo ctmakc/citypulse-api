@@ -30,6 +30,20 @@ export interface MapAsset {
   riskLevel: RiskLevel;
 }
 
+export interface AssetDocument {
+  name: string;
+  kind: string;
+  size: string;
+  uploadedAt: string;
+}
+
+export interface AssetReading {
+  recordedAt: string;
+  metric: string;
+  value: number;
+  unit: string;
+}
+
 /** Derive a RiskLevel from condition score and failure probability. */
 function calcRiskLevel(condition: number, failureProb: number): RiskLevel {
   const score = (100 - condition) * 0.6 + failureProb * 100 * 0.4;
@@ -67,11 +81,68 @@ export class AssetsService {
       include: {
         inspections: { orderBy: { inspectedAt: 'desc' } },
         incidents: { orderBy: { reportedAt: 'desc' } },
-        workOrders: { orderBy: { createdAt: 'desc' } },
+        workOrders: {
+          where: { assetId: id },
+          orderBy: { createdAt: 'desc' },
+        },
       },
     });
     if (!asset) throw new NotFoundException(`Asset ${id} not found`);
-    return asset;
+
+    // Attach a synthesized documents list (no file storage yet — static per asset type).
+    return { ...asset, documents: this.synthDocuments(asset) };
+  }
+
+  /**
+   * Synthesize a deterministic documents list for the asset detail page.
+   * No file storage exists yet, so these are static stubs keyed off asset type.
+   * `uploadedAt` is derived from the asset's lastInspected / createdAt so it is stable.
+   */
+  private synthDocuments(asset: {
+    type: AssetType;
+    externalId: string | null;
+    lastInspected: Date | null;
+    createdAt: Date;
+  }): AssetDocument[] {
+    const baseDate = asset.lastInspected ?? asset.createdAt;
+    const iso = (monthsAgo: number) => {
+      const d = new Date(baseDate);
+      d.setMonth(d.getMonth() - monthsAgo);
+      return d.toISOString();
+    };
+    const tag = asset.externalId ?? 'asset';
+    const year = new Date(baseDate).getFullYear();
+
+    const common: AssetDocument[] = [
+      { name: `${year} inspection report.pdf`, kind: 'PDF', size: '2.4 MB', uploadedAt: iso(0) },
+      { name: `Asset record ${tag}.pdf`, kind: 'PDF', size: '0.6 MB', uploadedAt: iso(14) },
+    ];
+
+    const byType: Partial<Record<AssetType, AssetDocument[]>> = {
+      [AssetType.WATER_MAIN]: [
+        { name: 'Pressure test results.xlsx', kind: 'XLSX', size: '1.1 MB', uploadedAt: iso(3) },
+        { name: 'Pipe material spec sheet.pdf', kind: 'PDF', size: '0.9 MB', uploadedAt: iso(20) },
+        { name: 'Failure-risk model output.csv', kind: 'CSV', size: '0.3 MB', uploadedAt: iso(1) },
+      ],
+      [AssetType.PUMP_STATION]: [
+        { name: 'Pump performance log.xlsx', kind: 'XLSX', size: '1.4 MB', uploadedAt: iso(2) },
+        { name: 'Motor maintenance manual.pdf', kind: 'PDF', size: '4.7 MB', uploadedAt: iso(24) },
+      ],
+      [AssetType.BRIDGE]: [
+        { name: 'Structural load rating.pdf', kind: 'PDF', size: '3.2 MB', uploadedAt: iso(6) },
+        { name: 'Deck condition survey photos.zip', kind: 'ZIP', size: '18.6 MB', uploadedAt: iso(4) },
+        { name: 'NBI inventory sheet.pdf', kind: 'PDF', size: '0.5 MB', uploadedAt: iso(12) },
+      ],
+      [AssetType.ROAD_SEGMENT]: [
+        { name: 'Pavement condition index.xlsx', kind: 'XLSX', size: '0.8 MB', uploadedAt: iso(5) },
+      ],
+      [AssetType.TRAFFIC_SIGNAL]: [
+        { name: 'Signal timing plan.pdf', kind: 'PDF', size: '0.7 MB', uploadedAt: iso(2) },
+        { name: 'Controller config export.json', kind: 'JSON', size: '0.1 MB', uploadedAt: iso(1) },
+      ],
+    };
+
+    return [...(byType[asset.type] ?? []), ...common];
   }
 
   // -----------------------------------------------------------------------
@@ -105,6 +176,131 @@ export class AssetsService {
       this.prisma.asset.count({ where: { tenantId: resolvedTenantId, riskLevel: RiskLevel.OK } }),
     ]);
     return { total, critical, elevated, watch, ok };
+  }
+
+  // -----------------------------------------------------------------------
+  // Sensor time-series
+  // -----------------------------------------------------------------------
+
+  /**
+   * Return ~24 hourly sensor readings for an asset.
+   *
+   * If real EnvironmentalReading rows exist for the asset's district they are used;
+   * otherwise the series is synthesized. The synthesis is fully DETERMINISTIC given
+   * the asset id + condition (no Math.random), so repeated calls return identical data
+   * and the chart is stable across reloads. The metric/unit depend on asset type:
+   *   WATER_MAIN   -> pressure (psi)
+   *   PUMP_STATION -> flow (L/s)
+   *   BRIDGE       -> strain/vibration (mm/s)
+   *   TRAFFIC_SIGNAL -> cycle-time (s)
+   *   default      -> health index (index)
+   * Lower-condition assets trend worse (higher pressure swing, more vibration, etc).
+   */
+  async getReadings(tenantId: string, id: string): Promise<AssetReading[]> {
+    const asset = await this.findById(tenantId, id);
+
+    const { metric, unit, base, swing, slope } = this.readingProfile(
+      asset.type,
+      asset.condition,
+    );
+
+    // Deterministic seed from the asset id so the noise term is stable but asset-specific.
+    const seed = this.hashSeed(asset.id);
+    const points = 24;
+    const now = Date.now();
+    const readings: AssetReading[] = [];
+
+    for (let i = points - 1; i >= 0; i--) {
+      const hoursAgo = i;
+      const recordedAt = new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
+      const t = (points - 1 - i) / (points - 1); // 0 -> 1 across the window
+
+      // Diurnal sine wave + a small deterministic pseudo-noise term + slow drift.
+      const phase = (2 * Math.PI * (points - 1 - i)) / points;
+      const diurnal = Math.sin(phase) * swing;
+      const noise =
+        ((Math.sin(seed + (points - 1 - i) * 1.7) +
+          Math.cos(seed * 0.5 + (points - 1 - i) * 0.9)) /
+          2) *
+        (swing * 0.25);
+      const drift = slope * t;
+
+      const raw = base + diurnal + noise + drift;
+      const value = Math.round(raw * 100) / 100;
+
+      readings.push({ recordedAt, metric, value, unit });
+    }
+
+    return readings;
+  }
+
+  /** Per-asset-type reading profile. Worse condition => larger swings / worse baseline. */
+  private readingProfile(type: AssetType, condition: number) {
+    // wear in [0,1]: 0 = pristine (condition 100), 1 = failing (condition 0).
+    const wear = Math.min(1, Math.max(0, (100 - condition) / 100));
+
+    switch (type) {
+      case AssetType.WATER_MAIN:
+        // Higher wear -> higher mean pressure + bigger surges (failure precursor).
+        return {
+          metric: 'pressure',
+          unit: 'psi',
+          base: 62 + wear * 18,
+          swing: 4 + wear * 10,
+          slope: wear * 6,
+        };
+      case AssetType.PUMP_STATION:
+        return {
+          metric: 'flow',
+          unit: 'L/s',
+          base: 120 - wear * 30,
+          swing: 12 + wear * 8,
+          slope: -wear * 10,
+        };
+      case AssetType.BRIDGE:
+        // Strain/vibration rises with wear.
+        return {
+          metric: 'vibration',
+          unit: 'mm/s',
+          base: 1.2 + wear * 2.8,
+          swing: 0.4 + wear * 1.1,
+          slope: wear * 0.9,
+        };
+      case AssetType.TRAFFIC_SIGNAL:
+        return {
+          metric: 'cycle_time',
+          unit: 's',
+          base: 90 + wear * 40,
+          swing: 8 + wear * 12,
+          slope: wear * 8,
+        };
+      case AssetType.ROAD_SEGMENT:
+        return {
+          metric: 'roughness',
+          unit: 'IRI',
+          base: 1.5 + wear * 3.5,
+          swing: 0.2 + wear * 0.6,
+          slope: wear * 0.5,
+        };
+      default:
+        // Generic health-index trend: 0-100, higher is healthier, drifts down with wear.
+        return {
+          metric: 'health_index',
+          unit: 'index',
+          base: condition,
+          swing: 2 + wear * 4,
+          slope: -wear * 6,
+        };
+    }
+  }
+
+  /** Cheap deterministic string hash -> small float seed in roughly [0, 2π). */
+  private hashSeed(s: string): number {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) % 1000003;
+    }
+    return (h % 628) / 100; // ~[0, 6.28)
   }
 
   // -----------------------------------------------------------------------
