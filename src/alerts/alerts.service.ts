@@ -3,12 +3,25 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAlertDto } from './dto/create-alert.dto';
 import { AlertFiltersDto } from './dto/alert-filters.dto';
 import { Severity } from '@prisma/client';
+import {
+  clampLimit,
+  decodeCursor,
+  cursorWhereDesc,
+  buildPage,
+} from '../assets/pagination.util';
 
 @Injectable()
 export class AlertsService {
   constructor(private prisma: PrismaService) {}
 
-  findAll(tenantId: string, filters?: AlertFiltersDto) {
+  /**
+   * List alerts for a tenant.
+   *
+   * Backward compatible: no `limit` => plain array (legacy, createdAt desc).
+   * `limit` => `{ data, nextCursor, total }` envelope with stable cursor
+   * pagination (createdAt desc, id desc).
+   */
+  async findAll(tenantId: string, filters?: AlertFiltersDto) {
     const where: Record<string, unknown> = { tenantId };
 
     if (filters?.severity) where['severity'] = filters.severity;
@@ -17,10 +30,24 @@ export class AlertsService {
     if (filters?.acknowledged !== undefined) where['acknowledged'] = filters.acknowledged;
     if (filters?.unresolved) where['resolvedAt'] = null;
 
-    return this.prisma.alert.findMany({
-      where,
-      orderBy: [{ createdAt: 'desc' }],
-    });
+    if (filters?.limit === undefined) {
+      return this.prisma.alert.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }],
+      });
+    }
+
+    const limit = clampLimit(filters.limit);
+    const cursor = decodeCursor(filters.cursor);
+    const [rows, total] = await Promise.all([
+      this.prisma.alert.findMany({
+        where: { ...where, ...cursorWhereDesc(cursor) },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+      }),
+      this.prisma.alert.count({ where }),
+    ]);
+    return buildPage(rows, limit, total);
   }
 
   async findById(tenantId: string, id: string) {

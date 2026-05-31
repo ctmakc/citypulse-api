@@ -1,7 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ReportStatus, Severity } from '@prisma/client';
+import { ReportStatus, Severity, Report311 } from '@prisma/client';
 import { CreateReport311Dto } from './dto/create-report311.dto';
+import {
+  PaginatedResult,
+  clampLimit,
+  decodeCursor,
+  cursorWhereDesc,
+  buildPage,
+} from '../assets/pagination.util';
 
 // SLA hours by severity
 const SLA_HOURS: Record<Severity, number> = {
@@ -45,6 +52,12 @@ export interface ReportFilters {
   severity?: Severity;
 }
 
+/** Pagination + filter options for the list endpoint. */
+export interface ReportListOptions extends ReportFilters {
+  limit?: number;
+  cursor?: string;
+}
+
 export interface ReportStats {
   total: number;
   byStatus: Record<string, number>;
@@ -66,16 +79,40 @@ export interface MapPoint {
 export class Reports311Service {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(tenantId: string, filters?: ReportFilters) {
+  /**
+   * List 311 reports for a tenant.
+   *
+   * Backward compatible: no `limit` => plain `Report311[]` (legacy, createdAt
+   * desc). `limit` => `{ data, nextCursor, total }` envelope with stable cursor
+   * pagination (createdAt desc, id desc).
+   */
+  async findAll(
+    tenantId: string,
+    options?: ReportListOptions,
+  ): Promise<Report311[] | PaginatedResult<Report311>> {
     const where: Record<string, unknown> = { tenantId };
-    if (filters?.status) where.status = filters.status;
-    if (filters?.category) where.category = filters.category;
-    if (filters?.severity) where.severity = filters.severity;
+    if (options?.status) where.status = options.status;
+    if (options?.category) where.category = options.category;
+    if (options?.severity) where.severity = options.severity;
 
-    return this.prisma.report311.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    });
+    if (options?.limit === undefined) {
+      return this.prisma.report311.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    const limit = clampLimit(options.limit);
+    const cursor = decodeCursor(options.cursor);
+    const [rows, total] = await Promise.all([
+      this.prisma.report311.findMany({
+        where: { ...where, ...cursorWhereDesc(cursor) },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+      }),
+      this.prisma.report311.count({ where }),
+    ]);
+    return buildPage(rows, limit, total);
   }
 
   async findById(tenantId: string, id: string) {

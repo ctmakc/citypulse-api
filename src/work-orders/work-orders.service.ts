@@ -4,12 +4,25 @@ import { CreateWorkOrderDto } from './dto/create-work-order.dto';
 import { UpdateWorkOrderDto } from './dto/update-work-order.dto';
 import { WorkOrderFiltersDto } from './dto/work-order-filters.dto';
 import { Priority, WorkOrderStatus } from '@prisma/client';
+import {
+  clampLimit,
+  decodeCursor,
+  cursorWhereDesc,
+  buildPage,
+} from '../assets/pagination.util';
 
 @Injectable()
 export class WorkOrdersService {
   constructor(private prisma: PrismaService) {}
 
-  findAll(tenantId: string, filters?: WorkOrderFiltersDto) {
+  /**
+   * List work orders for a tenant.
+   *
+   * Backward compatible: no `limit` => plain array (legacy, createdAt desc with
+   * the asset summary included). `limit` => `{ data, nextCursor, total }`
+   * envelope with stable cursor pagination (createdAt desc, id desc).
+   */
+  async findAll(tenantId: string, filters?: WorkOrderFiltersDto) {
     const where: Record<string, unknown> = { tenantId };
 
     if (filters?.status) where['status'] = filters.status;
@@ -17,11 +30,28 @@ export class WorkOrdersService {
     if (filters?.department) where['department'] = filters.department;
     if (filters?.assignee) where['assignee'] = filters.assignee;
 
-    return this.prisma.workOrder.findMany({
-      where,
-      include: { asset: { select: { id: true, name: true, type: true } } },
-      orderBy: [{ createdAt: 'desc' }],
-    });
+    const include = { asset: { select: { id: true, name: true, type: true } } };
+
+    if (filters?.limit === undefined) {
+      return this.prisma.workOrder.findMany({
+        where,
+        include,
+        orderBy: [{ createdAt: 'desc' }],
+      });
+    }
+
+    const limit = clampLimit(filters.limit);
+    const cursor = decodeCursor(filters.cursor);
+    const [rows, total] = await Promise.all([
+      this.prisma.workOrder.findMany({
+        where: { ...where, ...cursorWhereDesc(cursor) },
+        include,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+      }),
+      this.prisma.workOrder.count({ where }),
+    ]);
+    return buildPage(rows, limit, total);
   }
 
   async findById(tenantId: string, id: string) {

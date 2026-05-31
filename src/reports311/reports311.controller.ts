@@ -15,10 +15,9 @@ import {
   ApiTags,
   ApiBearerAuth,
   ApiOperation,
-  ApiQuery,
   ApiParam,
 } from '@nestjs/swagger';
-import { ReportStatus, Severity, UserRole } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -26,6 +25,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Reports311Service } from './reports311.service';
 import { CreateReport311Dto } from './dto/create-report311.dto';
 import { UpdateReport311StatusDto } from './dto/update-report311-status.dto';
+import { ListReports311Dto } from './dto/list-reports311.dto';
 
 @ApiTags('reports311')
 @Controller('reports311')
@@ -37,21 +37,14 @@ export class Reports311Controller {
   @Get()
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'List all 311 reports for the tenant' })
-  @ApiQuery({ name: 'status', enum: ReportStatus, required: false })
-  @ApiQuery({ name: 'category', type: String, required: false })
-  @ApiQuery({ name: 'severity', enum: Severity, required: false })
-  findAll(
-    @Request() req: any,
-    @Query('status') status?: ReportStatus,
-    @Query('category') category?: string,
-    @Query('severity') severity?: Severity,
-  ) {
-    return this.service.findAll(req.user.tenantId, {
-      status,
-      category,
-      severity,
-    });
+  @ApiOperation({
+    summary: 'List 311 reports for the tenant',
+    description:
+      'Backward compatible: no `limit` => plain array (legacy); `limit` => ' +
+      'paginated envelope { data, nextCursor, total }.',
+  })
+  findAll(@Request() req: any, @Query() query: ListReports311Dto) {
+    return this.service.findAll(req.user.tenantId, query);
   }
 
   @Get('stats')

@@ -1,28 +1,30 @@
 import { IsOptional, IsEnum, IsString, IsNumber, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Priority, WorkOrderStatus } from '@prisma/client';
+import { AssetType, RiskLevel } from '@prisma/client';
 
-export class WorkOrderFiltersDto {
-  @ApiPropertyOptional({ enum: WorkOrderStatus })
+/**
+ * Query DTO for GET /assets.
+ *
+ * Filters (type / riskLevel / district) work in both response modes.
+ * Pagination is OPT-IN: omit `limit` => plain array (legacy); pass `limit` =>
+ * { data, nextCursor, total } envelope.
+ */
+export class ListAssetsDto {
+  @ApiPropertyOptional({ enum: AssetType })
   @IsOptional()
-  @IsEnum(WorkOrderStatus)
-  status?: WorkOrderStatus;
+  @IsEnum(AssetType)
+  type?: AssetType;
 
-  @ApiPropertyOptional({ enum: Priority })
+  @ApiPropertyOptional({ enum: RiskLevel })
   @IsOptional()
-  @IsEnum(Priority)
-  priority?: Priority;
+  @IsEnum(RiskLevel)
+  riskLevel?: RiskLevel;
 
-  @ApiPropertyOptional({ example: 'Public Works' })
+  @ApiPropertyOptional({ example: 'Downtown' })
   @IsOptional()
   @IsString()
-  department?: string;
-
-  @ApiPropertyOptional({ example: 'John Smith' })
-  @IsOptional()
-  @IsString()
-  assignee?: string;
+  district?: string;
 
   @ApiPropertyOptional({
     description:

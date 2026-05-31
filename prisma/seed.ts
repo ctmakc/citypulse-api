@@ -270,6 +270,97 @@ async function main() {
     },
   });
 
+  // ---------------------------------------------------------------------
+  // Large synthetic asset set for spatial / pagination perf testing.
+  // Guarded: only inserts when the asset count is small, so re-runs are
+  // stable and we never balloon the table. The spread is fully
+  // DETERMINISTIC (index-derived trig jitter), so geometry is reproducible.
+  // ---------------------------------------------------------------------
+  const SYNTHETIC_TARGET = 50000;
+  const existingAssetCount = await prisma.asset.count();
+  if (existingAssetCount < 20000) {
+    // Bounding box around the city center.
+    const LAT_MIN = 47.558;
+    const LAT_MAX = 47.642;
+    const LNG_MIN = -122.405;
+    const LNG_MAX = -122.255;
+    const LAT_SPAN = LAT_MAX - LAT_MIN; // 0.084
+    const LNG_SPAN = LNG_MAX - LNG_MIN; // 0.150
+
+    const TYPES = Object.values(AssetType);
+    const RISKS = Object.values(RiskLevel);
+    const DISTRICTS = ['Riverside', 'Cedar Crossing', 'Old Town', 'Westbank', 'Northgate', 'Harbor', 'Eastpoint', 'Southshore'];
+    const DEPARTMENTS = ['Public Works', 'Water Authority', 'Transportation', 'Utilities', 'Fire & Rescue', 'Facilities', 'Sanitation', 'Environment'];
+
+    // Deterministic 0..1 hash from an integer (mulberry32-style, no state).
+    const det = (n: number): number => {
+      let t = (n + 0x6d2b79f5) >>> 0;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+
+    const rows: {
+      id: string;
+      tenantId: string;
+      externalId: string;
+      type: AssetType;
+      name: string;
+      district: string;
+      department: string;
+      locationLat: number;
+      locationLng: number;
+      condition: number;
+      failureProb: number;
+      riskLevel: RiskLevel;
+    }[] = [];
+
+    for (let i = 0; i < SYNTHETIC_TARGET; i++) {
+      // Deterministic spread: trig over the index gives a smooth, reproducible
+      // scatter; the det() hash decorrelates lat from lng so it isn't a line.
+      const u = (Math.sin(i * 12.9898) * 43758.5453123) % 1;
+      const v = det(i);
+      const latFrac = (Math.abs(u) + det(i * 7 + 1)) / 2; // 0..1
+      const lngFrac = (v + Math.abs((Math.cos(i * 78.233) * 43758.5453) % 1)) / 2; // 0..1
+      const lat = LAT_MIN + latFrac * LAT_SPAN;
+      const lng = LNG_MIN + lngFrac * LNG_SPAN;
+
+      const type = TYPES[i % TYPES.length];
+      const condition = Math.round(det(i * 3 + 2) * 100); // 0..100
+      const failureProb = Math.round(det(i * 5 + 3) * 1000) / 1000; // 0..1, 3dp
+      const riskLevel = RISKS[i % RISKS.length];
+      const district = DISTRICTS[i % DISTRICTS.length];
+      const department = DEPARTMENTS[(i + 3) % DEPARTMENTS.length];
+      const externalId = `SYN-${String(i).padStart(6, '0')}`;
+
+      rows.push({
+        id: `${externalId}-${tenant.id}`,
+        tenantId: tenant.id,
+        externalId,
+        type,
+        name: `Synthetic ${type} ${i}`,
+        district,
+        department,
+        locationLat: Math.round(lat * 1e6) / 1e6,
+        locationLng: Math.round(lng * 1e6) / 1e6,
+        condition,
+        failureProb,
+        riskLevel,
+      });
+    }
+
+    const CHUNK = 5000;
+    let inserted = 0;
+    for (let off = 0; off < rows.length; off += CHUNK) {
+      const batch = rows.slice(off, off + CHUNK);
+      const res = await prisma.asset.createMany({ data: batch, skipDuplicates: true });
+      inserted += res.count;
+    }
+    console.log(`Synthetic assets inserted: ${inserted} (target ${SYNTHETIC_TARGET}, prior count ${existingAssetCount})`);
+  } else {
+    console.log(`Synthetic asset insert SKIPPED — asset count already ${existingAssetCount} (>= 20000).`);
+  }
+
   console.log(
     'Seed complete — Meridian tenant, 8 assets, 5 alerts, 5 reports, 6 projects, 9 work orders, ' +
       `${inspections.length} inspections, ${incidents.length} incidents`,

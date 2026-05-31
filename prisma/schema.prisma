@@ -295,3 +295,18 @@ model TrafficReading {
   congestionIndex  Float?
   recordedAt       DateTime @default(now())
 }
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String
+  actorType String   // 'user' | 'agent' | 'system'
+  actorId   String?
+  action    String   // 'create' | 'update' | 'delete'
+  entity    String   // e.g. 'WorkOrder', 'Asset'
+  entityId  String?
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([entity, entityId])
+}

@@ -2,16 +2,48 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCapitalProjectDto } from './dto/create-capital-project.dto';
 import { UpdateCapitalProjectDto } from './dto/update-capital-project.dto';
+import { ListCapitalDto } from './dto/list-capital.dto';
+import {
+  clampLimit,
+  decodeCursor,
+  cursorWhereDesc,
+  buildPage,
+} from '../assets/pagination.util';
 
 @Injectable()
 export class CapitalService {
   constructor(private prisma: PrismaService) {}
 
-  findAll(tenantId: string) {
-    return this.prisma.capitalProject.findMany({
-      where: { tenantId },
-      orderBy: [{ deadline: 'asc' }, { probability: 'desc' }],
-    });
+  /**
+   * List capital projects for a tenant.
+   *
+   * Backward compatible: no `limit` => plain array (legacy ordering: deadline
+   * asc, probability desc). `limit` => `{ data, nextCursor, total }` envelope
+   * with stable cursor pagination (createdAt desc, id desc).
+   */
+  async findAll(tenantId: string, options?: ListCapitalDto) {
+    const where: Record<string, unknown> = { tenantId };
+    if (options?.status) where['status'] = options.status;
+    if (options?.urgency) where['urgency'] = options.urgency;
+
+    if (options?.limit === undefined) {
+      return this.prisma.capitalProject.findMany({
+        where,
+        orderBy: [{ deadline: 'asc' }, { probability: 'desc' }],
+      });
+    }
+
+    const limit = clampLimit(options.limit);
+    const cursor = decodeCursor(options.cursor);
+    const [rows, total] = await Promise.all([
+      this.prisma.capitalProject.findMany({
+        where: { ...where, ...cursorWhereDesc(cursor) },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+      }),
+      this.prisma.capitalProject.count({ where }),
+    ]);
+    return buildPage(rows, limit, total);
   }
 
   async findById(tenantId: string, id: string) {

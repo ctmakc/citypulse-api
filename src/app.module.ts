@@ -1,9 +1,15 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { BullModule } from '@nestjs/bull';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
+import { QueueModule } from './queue/queue.module';
+import { buildBullRootOptions } from './queue/redis-options';
+import { AuditModule } from './audit/audit.module';
+import { AuditInterceptor } from './audit/audit.interceptor';
 import { AuthModule } from './auth/auth.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { UsersModule } from './users/users.module';
@@ -22,6 +28,10 @@ import { DashboardModule } from './dashboard/dashboard.module';
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 200 }]),
     ScheduleModule.forRoot(),
+    // Bull root config points at Redis (localhost:6387). ioredis is configured
+    // to reconnect indefinitely with bounded backoff and to NOT throw on connect
+    // failure, so a Redis outage degrades gracefully instead of crashing boot.
+    BullModule.forRoot(buildBullRootOptions()),
     PrismaModule,
     AuthModule,
     TenantsModule,
@@ -35,6 +45,16 @@ import { DashboardModule } from './dashboard/dashboard.module';
     EnvironmentModule,
     TrafficModule,
     DashboardModule,
+    AuditModule,
+    QueueModule.register(),
+  ],
+  providers: [
+    // Global audit-trail interceptor: writes an AuditLog row for every
+    // successful mutating request. Never throws (failures are swallowed).
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditInterceptor,
+    },
   ],
 })
 export class AppModule implements NestModule {

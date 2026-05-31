@@ -16,7 +16,6 @@ import {
   ApiTags,
   ApiBearerAuth,
   ApiOperation,
-  ApiQuery,
   ApiParam,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -25,7 +24,12 @@ import { CreateAssetDto } from './dto/create-asset.dto.js';
 import { UpdateAssetDto } from './dto/update-asset.dto.js';
 import { CreateInspectionDto } from './dto/create-inspection.dto.js';
 import { CreateIncidentDto } from './dto/create-incident.dto.js';
-import { AssetType, RiskLevel } from '@prisma/client';
+import { ListAssetsDto } from './dto/list-assets.dto.js';
+import {
+  WithinQueryDto,
+  NearQueryDto,
+  ClustersQueryDto,
+} from './dto/spatial-query.dto.js';
 
 @ApiTags('assets')
 @ApiBearerAuth()
@@ -39,17 +43,57 @@ export class AssetsController {
   // -----------------------------------------------------------------------
 
   @Get()
-  @ApiOperation({ summary: 'List all assets for the tenant with optional filters' })
-  @ApiQuery({ name: 'type', required: false, enum: AssetType })
-  @ApiQuery({ name: 'riskLevel', required: false, enum: RiskLevel })
-  @ApiQuery({ name: 'district', required: false, type: String })
-  findAll(
-    @Request() req: any,
-    @Query('type') type?: AssetType,
-    @Query('riskLevel') riskLevel?: RiskLevel,
-    @Query('district') district?: string,
-  ) {
-    return this.service.findAll(req.user.tenantId, { type, riskLevel, district });
+  @ApiOperation({
+    summary: 'List assets for the tenant with optional filters',
+    description:
+      'Backward compatible: with no `limit` query param this returns a plain ' +
+      'array (legacy). With `limit` it returns a paginated envelope ' +
+      '{ data, nextCursor, total } using opaque cursor pagination.',
+  })
+  findAll(@Request() req: any, @Query() query: ListAssetsDto) {
+    return this.service.findAll(req.user.tenantId, query);
+  }
+
+  // -----------------------------------------------------------------------
+  // Spatial (PostGIS) — declared before ':id' so these static segments are
+  // not captured by the dynamic param route.
+  // -----------------------------------------------------------------------
+
+  @Get('within')
+  @ApiOperation({
+    summary: 'Assets inside a bounding box (ST_MakeEnvelope + ST_Within)',
+    description:
+      'Lightweight rows for map rendering. Pass n/s/e/w as WGS84 degrees. ' +
+      'Default limit 2000.',
+  })
+  findWithin(@Request() req: any, @Query() query: WithinQueryDto) {
+    const { n, s, e, w, limit } = query;
+    return this.service.findWithinBbox(req.user.tenantId, { n, s, e, w }, limit);
+  }
+
+  @Get('near')
+  @ApiOperation({
+    summary: 'Assets within radius meters of a point, nearest first',
+    description:
+      'Uses ST_DWithin + ST_Distance on geography casts. Returns rows + ' +
+      'distanceMeters. Default radius 500m.',
+  })
+  findNear(@Request() req: any, @Query() query: NearQueryDto) {
+    const { lat, lng, radius, limit } = query;
+    return this.service.findNear(req.user.tenantId, lat, lng, radius, limit);
+  }
+
+  @Get('clusters')
+  @ApiOperation({
+    summary: 'Server-side point clustering for low-zoom map rendering',
+    description:
+      'Snaps points to a grid (ST_SnapToGrid) inside the bbox and returns ' +
+      'cluster centroids with counts. `grid` is the cell size in degrees ' +
+      '(default 0.01 ~ 1km).',
+  })
+  clusters(@Request() req: any, @Query() query: ClustersQueryDto) {
+    const { n, s, e, w, grid } = query;
+    return this.service.clusters(req.user.tenantId, { n, s, e, w }, grid);
   }
 
   @Get('map')

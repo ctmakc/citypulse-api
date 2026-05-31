@@ -1,28 +1,26 @@
-import { IsOptional, IsEnum, IsString, IsNumber, Min } from 'class-validator';
+import { IsOptional, IsString, IsNumber, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Priority, WorkOrderStatus } from '@prisma/client';
 
-export class WorkOrderFiltersDto {
-  @ApiPropertyOptional({ enum: WorkOrderStatus })
-  @IsOptional()
-  @IsEnum(WorkOrderStatus)
-  status?: WorkOrderStatus;
-
-  @ApiPropertyOptional({ enum: Priority })
-  @IsOptional()
-  @IsEnum(Priority)
-  priority?: Priority;
-
-  @ApiPropertyOptional({ example: 'Public Works' })
+/**
+ * Query DTO for GET /capital.
+ *
+ * Pagination is OPT-IN and backward compatible: omit `limit` => plain array
+ * (legacy); pass `limit` => { data, nextCursor, total } envelope.
+ *
+ * CapitalProject.status / urgency are free-form strings in the schema, so they
+ * are exposed as optional string equality filters.
+ */
+export class ListCapitalDto {
+  @ApiPropertyOptional({ example: 'Identified' })
   @IsOptional()
   @IsString()
-  department?: string;
+  status?: string;
 
-  @ApiPropertyOptional({ example: 'John Smith' })
+  @ApiPropertyOptional({ example: 'High' })
   @IsOptional()
   @IsString()
-  assignee?: string;
+  urgency?: string;
 
   @ApiPropertyOptional({
     description:

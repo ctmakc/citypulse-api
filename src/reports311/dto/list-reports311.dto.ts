@@ -1,28 +1,29 @@
 import { IsOptional, IsEnum, IsString, IsNumber, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Priority, WorkOrderStatus } from '@prisma/client';
+import { ReportStatus, Severity } from '@prisma/client';
 
-export class WorkOrderFiltersDto {
-  @ApiPropertyOptional({ enum: WorkOrderStatus })
+/**
+ * Query DTO for GET /reports311.
+ *
+ * Pagination is OPT-IN and backward compatible: omit `limit` => plain array
+ * (legacy); pass `limit` => { data, nextCursor, total } envelope.
+ */
+export class ListReports311Dto {
+  @ApiPropertyOptional({ enum: ReportStatus })
   @IsOptional()
-  @IsEnum(WorkOrderStatus)
-  status?: WorkOrderStatus;
+  @IsEnum(ReportStatus)
+  status?: ReportStatus;
 
-  @ApiPropertyOptional({ enum: Priority })
-  @IsOptional()
-  @IsEnum(Priority)
-  priority?: Priority;
-
-  @ApiPropertyOptional({ example: 'Public Works' })
-  @IsOptional()
-  @IsString()
-  department?: string;
-
-  @ApiPropertyOptional({ example: 'John Smith' })
+  @ApiPropertyOptional({ example: 'Pothole' })
   @IsOptional()
   @IsString()
-  assignee?: string;
+  category?: string;
+
+  @ApiPropertyOptional({ enum: Severity })
+  @IsOptional()
+  @IsEnum(Severity)
+  severity?: Severity;
 
   @ApiPropertyOptional({
     description:
