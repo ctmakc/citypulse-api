@@ -1,18 +1,24 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAlertDto } from './dto/create-alert.dto';
 import { AlertFiltersDto } from './dto/alert-filters.dto';
-import { Severity } from '@prisma/client';
+import { Severity, Alert } from '@prisma/client';
 import {
   clampLimit,
   decodeCursor,
   cursorWhereDesc,
   buildPage,
 } from '../assets/pagination.util';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AlertsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(AlertsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /**
    * List alerts for a tenant.
@@ -56,9 +62,67 @@ export class AlertsService {
     return alert;
   }
 
-  create(tenantId: string, dto: CreateAlertDto) {
-    return this.prisma.alert.create({
+  async create(tenantId: string, dto: CreateAlertDto) {
+    const alert = await this.prisma.alert.create({
       data: { tenantId, ...dto },
+    });
+
+    // A newly-created Critical alert fans out to email + webhook. This is
+    // fire-and-forget: notification delivery must never block or fail the
+    // alert write, so we don't await it and we swallow any error.
+    if (alert.severity === Severity.CRITICAL) {
+      this.notifyCritical(alert);
+    }
+
+    return alert;
+  }
+
+  /**
+   * Best-effort notification fan-out for a Critical alert. Fully decoupled from
+   * the request: the NotificationsService methods already swallow their own
+   * errors, and this wrapper adds a final catch so an unexpected throw can't
+   * surface as an unhandled rejection.
+   */
+  private notifyCritical(alert: Alert): void {
+    const subject = `[CityPulse] CRITICAL: ${alert.title}`;
+    const lines = [
+      `A critical alert was raised in CityPulse.`,
+      ``,
+      `Title:       ${alert.title}`,
+      `Category:    ${alert.category}`,
+      alert.description ? `Description: ${alert.description}` : undefined,
+      alert.location ? `Location:    ${alert.location}` : undefined,
+      alert.department ? `Department:  ${alert.department}` : undefined,
+      alert.assetId ? `Asset:       ${alert.assetId}` : undefined,
+      `Raised at:   ${alert.createdAt.toISOString()}`,
+      `Alert ID:    ${alert.id}`,
+    ].filter((l): l is string => l !== undefined);
+    const body = lines.join('\n');
+
+    const recipient = process.env.ALERT_EMAIL_TO || 'ops@citypulse.local';
+    const webhookPayload = {
+      type: 'alert.critical',
+      tenantId: alert.tenantId,
+      alertId: alert.id,
+      severity: alert.severity,
+      category: alert.category,
+      title: alert.title,
+      description: alert.description ?? null,
+      location: alert.location ?? null,
+      department: alert.department ?? null,
+      assetId: alert.assetId ?? null,
+      createdAt: alert.createdAt.toISOString(),
+    };
+
+    void Promise.allSettled([
+      this.notifications.sendEmail(recipient, subject, body),
+      this.notifications.sendWebhook(webhookPayload),
+    ]).catch((err) => {
+      this.logger.warn(
+        `Critical-alert notification fan-out failed for ${alert.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     });
   }
 

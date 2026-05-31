@@ -4,3 +4,6 @@ node_modules
 
 /generated/prisma
 dist/
+
+# Generated report artifacts (PDF/XLSX) — created at runtime by ReportsService
+artifacts/

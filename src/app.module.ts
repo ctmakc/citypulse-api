@@ -22,6 +22,9 @@ import { AgentsModule } from './agents/agents.module';
 import { EnvironmentModule } from './environment/environment.module';
 import { TrafficModule } from './traffic/traffic.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { ReportsModule } from './reports/reports.module';
+import { ImportModule } from './import/import.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -45,6 +48,9 @@ import { DashboardModule } from './dashboard/dashboard.module';
     EnvironmentModule,
     TrafficModule,
     DashboardModule,
+    ReportsModule,
+    ImportModule,
+    NotificationsModule,
     AuditModule,
     QueueModule.register(),
   ],

@@ -115,6 +115,34 @@ export class Reports311Service {
     return buildPage(rows, limit, total);
   }
 
+  /**
+   * Public citizen lookup by trackingCode (no auth, NOT tenant-scoped — the
+   * code itself is the secret). Returns only non-sensitive fields safe to show
+   * an anonymous reporter: status, category, coarse location, timestamps.
+   * Deliberately omits submitter email, description, photo, exact lat/lng and
+   * internal routing/SLA data.
+   */
+  async trackByCode(trackingCode: string) {
+    const report = await this.prisma.report311.findUnique({
+      where: { trackingCode },
+      select: {
+        trackingCode: true,
+        status: true,
+        category: true,
+        location: true,
+        createdAt: true,
+        updatedAt: true,
+        resolvedAt: true,
+      },
+    });
+    if (!report) {
+      throw new NotFoundException(
+        `No 311 report found for tracking code '${trackingCode}'`,
+      );
+    }
+    return report;
+  }
+
   async findById(tenantId: string, id: string) {
     const report = await this.prisma.report311.findFirst({
       where: { id, tenantId },

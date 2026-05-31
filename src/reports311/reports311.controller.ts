@@ -63,6 +63,21 @@ export class Reports311Controller {
     return this.service.getMapPoints(req.user.tenantId);
   }
 
+  // Public citizen tracking lookup. Declared BEFORE `:id` so the literal
+  // `track` segment is matched before the `:id` wildcard. No auth: the
+  // trackingCode itself is the secret. Returns safe fields only.
+  @Get('track/:code')
+  @ApiOperation({
+    summary: 'Track a 311 report by its tracking code (public — no auth)',
+    description:
+      'Returns non-sensitive status info for a citizen-facing tracking page. ' +
+      'Looks up by trackingCode (the code is the secret; not tenant-scoped).',
+  })
+  @ApiParam({ name: 'code', description: 'Report tracking code' })
+  track(@Param('code') code: string) {
+    return this.service.trackByCode(code);
+  }
+
   @Get(':id')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
