@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id          String    @id @default(uuid())
+  name        String
+  type        TenantType @default(CITY)
+  country     String    @default("CA")
+  timezone    String    @default("America/Toronto")
+  riskScore   Int       @default(0)
+  riskLabel   String    @default("Normal")
+  population  Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  users       User[]
+  assets      Asset[]
+  alerts      Alert[]
+  reports311  Report311[]
+  projects    CapitalProject[]
+  agents      AgentRun[]
+  workOrders  WorkOrder[]
+}
+
+enum TenantType {
+  CITY
+  COUNTY
+  PROVINCE
+  UTILITY
+  AIRPORT
+  UNIVERSITY
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  email        String
+  name         String
+  role         UserRole @default(CITY_MANAGER)
+  department   String?
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, email])
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  OWNER
+  MAYOR
+  COUNCIL
+  CITY_MANAGER
+  PUBLIC_WORKS
+  TRANSPORTATION
+  ENVIRONMENT
+  UTILITIES
+  EMERGENCY_MGMT
+  GRANT_OFFICE
+  CITIZEN_SUPPORT
+  READ_ONLY
+}
+
+model Asset {
+  id              String    @id @default(uuid())
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+  externalId      String?
+  type            AssetType
+  name            String
+  description     String?
+  locationLat     Float?
+  locationLng     Float?
+  district        String?
+  department      String?
+  condition       Int       @default(100)
+  failureProb     Float     @default(0)
+  riskLevel       RiskLevel @default(OK)
+  installedAt     DateTime?
+  lastInspected   DateTime?
+  nextInspection  DateTime?
+  replacementCost Float?
+  maintenanceCost Float?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  inspections Inspection[]
+  incidents   Incident[]
+  workOrders  WorkOrder[]
+}
+
+enum AssetType {
+  BRIDGE
+  ROAD_SEGMENT
+  WATER_MAIN
+  WATER_STATION
+  HYDRANT
+  STREETLIGHT
+  TRAFFIC_SIGNAL
+  STORM_DRAIN
+  PUBLIC_BUILDING
+  PUMP_STATION
+  POWER_LINE
+}
+
+enum RiskLevel {
+  OK
+  WATCH
+  ELEVATED
+  CRITICAL
+}
+
+model Inspection {
+  id          String   @id @default(uuid())
+  assetId     String
+  asset       Asset    @relation(fields: [assetId], references: [id])
+  tenantId    String
+  inspector   String
+  condition   Int
+  notes       String?
+  findings    Json?
+  inspectedAt DateTime @default(now())
+}
+
+model Incident {
+  id          String         @id @default(uuid())
+  assetId     String?
+  asset       Asset?         @relation(fields: [assetId], references: [id])
+  tenantId    String
+  title       String
+  description String?
+  severity    Severity       @default(LOW)
+  status      IncidentStatus @default(OPEN)
+  reportedAt  DateTime       @default(now())
+  resolvedAt  DateTime?
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model Alert {
+  id           String    @id @default(uuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  externalId   String?
+  severity     Severity  @default(LOW)
+  category     String
+  title        String
+  description  String?
+  location     String?
+  department   String?
+  assetId      String?
+  acknowledged Boolean   @default(false)
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model Report311 {
+  id             String       @id @default(uuid())
+  tenantId       String
+  tenant         Tenant       @relation(fields: [tenantId], references: [id])
+  category       String
+  severity       Severity     @default(LOW)
+  location       String
+  locationLat    Float?
+  locationLng    Float?
+  description    String?
+  photoUrl       String?
+  status         ReportStatus @default(NEW)
+  department     String?
+  slaDeadline    DateTime?
+  duplicateOf    String?
+  duplicateCount Int          @default(0)
+  submitterEmail String?
+  trackingCode   String       @unique @default(uuid())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  resolvedAt     DateTime?
+}
+
+enum ReportStatus {
+  NEW
+  ROUTING
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model CapitalProject {
+  id               String   @id @default(uuid())
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  externalId       String?
+  title            String
+  description      String?
+  cost             Float?
+  urgency          String?
+  grantProgram     String?
+  grantEligibility String?
+  grantMatch       String?
+  climateScore     String?
+  safetyScore      String?
+  equityScore      String?
+  readiness        String?
+  deadline         DateTime?
+  probability      Float?
+  status           String   @default("Identified")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model WorkOrder {
+  id          String          @id @default(uuid())
+  tenantId    String
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  assetId     String?
+  asset       Asset?          @relation(fields: [assetId], references: [id])
+  title       String
+  description String?
+  department  String?
+  priority    Priority        @default(MEDIUM)
+  status      WorkOrderStatus @default(NEW)
+  assignee    String?
+  source      String?
+  dueDate     DateTime?
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum WorkOrderStatus {
+  NEW
+  ASSIGNED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model AgentRun {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  agentKey   String
+  status     String   @default("running")
+  finding    String?
+  confidence Float?
+  escalation String?
+  actions    Json?
+  runAt      DateTime @default(now())
+}
+
+model EnvironmentalReading {
+  id          String   @id @default(uuid())
+  tenantId    String
+  metric      String
+  value       Float
+  unit        String?
+  locationLat Float?
+  locationLng Float?
+  district    String?
+  recordedAt  DateTime @default(now())
+}
+
+model TrafficReading {
+  id               String   @id @default(uuid())
+  tenantId         String
+  intersection     String
+  delaySeconds     Int?
+  congestionIndex  Float?
+  recordedAt       DateTime @default(now())
+}
