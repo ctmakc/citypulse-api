@@ -15,6 +15,7 @@ async function bootstrap() {
   app.enableCors({
     origin: process.env.CORS_ORIGIN || 'http://localhost:3095',
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-ID'],
   });
 
   app.setGlobalPrefix('api/v1');
