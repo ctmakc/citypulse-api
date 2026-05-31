@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import helmet from 'helmet';
@@ -7,9 +7,13 @@ import helmet from 'helmet';
 const compression = require('compression');
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const logger = new Logger('Bootstrap');
+  const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
+  // Security headers. crossOriginEmbedderPolicy stays OFF so the Swagger UI and
+  // cross-origin Leaflet map tiles continue to load (COEP would block them).
   app.use(helmet({ crossOriginEmbedderPolicy: false }));
+  // gzip/deflate response compression.
   app.use(compression());
 
   app.enableCors({
@@ -30,7 +34,17 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  await app.listen(process.env.PORT ?? 3096);
-  console.log('CityPulse API running on port', process.env.PORT ?? 3096);
+  const port = Number(process.env.PORT ?? 3096);
+  const env = process.env.NODE_ENV ?? 'development';
+  await app.listen(port);
+
+  // Structured startup logging — one clean block on boot.
+  const url = `http://localhost:${port}`;
+  logger.log(`Environment   : ${env}`);
+  logger.log(`Listening on  : port ${port}`);
+  logger.log(`API base      : ${url}/api/v1`);
+  logger.log(`Swagger docs  : ${url}/api/docs`);
+  logger.log(`Health check  : ${url}/api/v1/health`);
+  logger.log(`CityPulse API ready → ${url}`);
 }
 bootstrap();

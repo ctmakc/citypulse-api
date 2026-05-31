@@ -1,0 +1,101 @@
+# CityPulse — full production stack.
+#
+# Brings up the whole platform (db + cache + api + web):
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# Requires the frontend repo checked out as a sibling at ../citypulse
+# (the `web` service builds from that context).
+#
+# Ports exposed on the host:
+#   postgres  -> 5453   redis -> 6387   api -> 3096   web -> 3095
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: citypulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: citypulse
+      POSTGRES_USER: citypulse
+      POSTGRES_PASSWORD: citypulse2026
+    ports:
+      - "5453:5432"
+    volumes:
+      - citypulse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citypulse -d citypulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: citypulse-redis
+    restart: unless-stopped
+    ports:
+      - "6387:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: citypulse-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://citypulse:citypulse2026@postgres:5432/citypulse"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      JWT_SECRET: "citypulse-jwt-secret-2026-sovereign-cities"
+      PORT: "3096"
+      NODE_ENV: production
+    ports:
+      - "3096:3096"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:3096/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  web:
+    build:
+      context: ../citypulse
+      dockerfile: Dockerfile
+    container_name: citypulse-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:3096"
+      PORT: "3000"
+      NODE_ENV: production
+    ports:
+      - "3095:3000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  citypulse_pgdata:
