@@ -1,13 +1,17 @@
-# CityPulse — full production stack.
+# CityPulse — ISOLATED production stack (api + db + cache).
 #
-# Brings up the whole platform (db + cache + api + web):
-#   docker compose -f docker-compose.prod.yml up --build
+# Deploy (isolated docker compose project, never collides with other projects):
+#   docker compose -p citypulse -f docker-compose.prod.yml up -d --build
 #
-# Requires the frontend repo checked out as a sibling at ../citypulse
-# (the `web` service builds from that context).
+# Isolation guarantees:
+#   * compose project name forced to "citypulse" (-p citypulse) -> own network "citypulse_default"
+#   * all container names prefixed citypulse-*
+#   * postgres & redis are INTERNAL ONLY (no host port published) -> cannot clash with anything
+#   * api is published on host port 13096 (a high, unused port) -> 13096 -> container 3096
+#   * the dedicated volume is citypulse_pgdata (does not touch finmozg_* / any other volume)
 #
-# Ports exposed on the host:
-#   postgres  -> 5453   redis -> 6387   api -> 3096   web -> 3095
+# The frontend "web" service was intentionally removed: the frontend is deployed
+# separately (Vercel) and its build context (../citypulse) does not exist on the VPS.
 
 services:
   postgres:
@@ -18,8 +22,11 @@ services:
       POSTGRES_DB: citypulse
       POSTGRES_USER: citypulse
       POSTGRES_PASSWORD: citypulse2026
-    ports:
-      - "5453:5432"
+    security_opt:
+      - no-new-privileges:true
+    # No host port published — reachable only inside citypulse_default as "postgres:5432".
+    expose:
+      - "5432"
     volumes:
       - citypulse_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -32,8 +39,15 @@ services:
     image: redis:7-alpine
     container_name: citypulse-redis
     restart: unless-stopped
-    ports:
-      - "6387:6379"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /data
+    # No host port published — reachable only inside citypulse_default as "redis:6379".
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -46,56 +60,46 @@ services:
       dockerfile: Dockerfile
     container_name: citypulse-api
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    # ReportsService writes generated PDF/XLSX reports under /app/artifacts on boot.
+    # With a read-only root filesystem that path must be a writable mount.
+    volumes:
+      - citypulse_artifacts:/app/artifacts
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Production configuration comes from the .env file (see /opt/citypulse-api/.env).
+    # env_file values are the source of truth; the inline values below are only a
+    # fallback so the service still boots if .env is ever missing.
+    env_file:
+      - .env
     environment:
       DATABASE_URL: "postgresql://citypulse:citypulse2026@postgres:5432/citypulse"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      JWT_SECRET: "citypulse-jwt-secret-2026-sovereign-cities"
       PORT: "3096"
       NODE_ENV: production
+    # Publish ONLY the api, on an isolated high host port (13096) that is free on the VPS.
+    # A reverse proxy (Caddy) can also reach it in-network at http://citypulse-api:3096.
     ports:
-      - "3096:3096"
+      - "13096:3096"
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "node -e \"require('http').get('http://127.0.0.1:3096/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
+          "node -e \"require('http').get('http://127.0.0.1:3096/api/v1/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
         ]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 40s
 
-  web:
-    build:
-      context: ../citypulse
-      dockerfile: Dockerfile
-    container_name: citypulse-web
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-    environment:
-      NEXT_PUBLIC_API_URL: "http://localhost:3096"
-      PORT: "3000"
-      NODE_ENV: production
-    ports:
-      - "3095:3000"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\"",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
 volumes:
   citypulse_pgdata:
+  citypulse_artifacts:
