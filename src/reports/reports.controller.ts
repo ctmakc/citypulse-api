@@ -157,18 +157,22 @@ export class ReportsController {
   // Download (stream from disk with correct headers)
   // -----------------------------------------------------------------------
   @Get('download/:file')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary:
       'Stream a generated report file with the correct Content-Type and ' +
-      'Content-Disposition. Reads the artifact from disk (not static hosting).',
+      'Content-Disposition. Reads the artifact from disk (not static hosting). ' +
+      'Requires authentication and is scoped to the caller tenant.',
   })
   @ApiParam({ name: 'file', description: 'Artifact filename' })
   async download(
     @Param('file') file: string,
+    @CurrentUser() user: JwtPayload,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { stream, contentType, fileName, sizeBytes } =
-      await this.reports.openForDownload(file);
+      await this.reports.openForDownload(file, user.tenantId);
     res.set({
       'Content-Type': contentType,
       'Content-Disposition': `attachment; filename="${fileName}"`,

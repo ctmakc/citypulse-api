@@ -150,7 +150,10 @@ export class ReportsService implements OnModuleInit {
    * Resolve a previously generated artifact for streaming. Guards against path
    * traversal by stripping to the basename and confining to ARTIFACTS_DIR.
    */
-  async openForDownload(requestedFile: string): Promise<{
+  async openForDownload(
+    requestedFile: string,
+    tenantId: string,
+  ): Promise<{
     stream: StreamableFile;
     contentType: string;
     fileName: string;
@@ -159,6 +162,14 @@ export class ReportsService implements OnModuleInit {
     const safe = basename(requestedFile);
     if (!safe || safe.startsWith('.')) {
       throw new NotFoundException('Invalid file');
+    }
+    // Tenant scoping: artifact filenames are `${type}_${tenantSlug}_${ts}.${fmt}`
+    // (see fileName()). Reject any file whose slug segment does not match the
+    // caller's own tenant so one tenant cannot download another tenant's report.
+    // Return 404 (not 403) so existence of other tenants' files is not confirmed.
+    const slug = tenantId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+    if (!slug || !safe.includes(`_${slug}_`)) {
+      throw new NotFoundException(`Report file ${safe} not found`);
     }
     const path = join(ARTIFACTS_DIR, safe);
     let size: number;
