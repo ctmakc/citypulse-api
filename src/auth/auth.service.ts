@@ -112,8 +112,17 @@ export class AuthService {
    * - Subsequent registrations require the caller to supply a valid OWNER/
    *   SUPER_ADMIN JWT (enforced at the controller layer).
    * - Duplicate email within the same tenant is rejected.
+   *
+   * Role assignment is only honored when `allowRoleAssignment` is true (the
+   * privileged /auth/register/admin route). On the open route the client-supplied
+   * `dto.role` is ignored so a self-registering user can never elevate their own
+   * role (e.g. to SUPER_ADMIN/OWNER); they always get READ_ONLY. The single
+   * exception is the first user of an empty tenant, who bootstraps as OWNER.
    */
-  async register(dto: RegisterDto): Promise<SafeUser> {
+  async register(
+    dto: RegisterDto,
+    allowRoleAssignment = false,
+  ): Promise<SafeUser> {
     // Verify tenant exists
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: dto.tenantId },
@@ -147,7 +156,9 @@ export class AuthService {
     const role: UserRole =
       userCount === 0
         ? UserRole.OWNER
-        : (dto.role ?? UserRole.READ_ONLY);
+        : allowRoleAssignment
+          ? (dto.role ?? UserRole.READ_ONLY)
+          : UserRole.READ_ONLY;
 
     const created = await this.prisma.user.create({
       data: {

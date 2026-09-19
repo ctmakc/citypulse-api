@@ -1,5 +1,12 @@
-import { IsOptional, IsEnum, IsBoolean, IsString } from 'class-validator';
-import { Transform } from 'class-transformer';
+import {
+  IsOptional,
+  IsEnum,
+  IsBoolean,
+  IsString,
+  IsNumber,
+  Min,
+} from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Severity } from '@prisma/client';
 
@@ -30,4 +37,23 @@ export class AlertFiltersDto {
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
   unresolved?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Page size. When provided, the response becomes a paginated envelope ' +
+      '{ data, nextCursor, total }. When omitted, a plain array is returned.',
+    example: 50,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  limit?: number;
+
+  @ApiPropertyOptional({
+    description: 'Opaque cursor from a previous response nextCursor.',
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }

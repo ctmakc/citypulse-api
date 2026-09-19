@@ -88,7 +88,8 @@ export class AuthController {
   @ApiResponse({ status: 201, description: 'User created' })
   @ApiResponse({ status: 403, description: 'Insufficient role' })
   async registerByAdmin(@Body() dto: RegisterDto) {
-    const user = await this.authService.register(dto);
+    // Privileged route: role assignment from the DTO is honored here only.
+    const user = await this.authService.register(dto, true);
     return { message: 'User registered successfully', user };
   }
 

@@ -1,16 +1,58 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { Asset, AssetType, RiskLevel } from '@prisma/client';
+import { Asset, AssetType, RiskLevel, Prisma } from '@prisma/client';
 import { CreateAssetDto } from './dto/create-asset.dto.js';
 import { UpdateAssetDto } from './dto/update-asset.dto.js';
 import { CreateInspectionDto } from './dto/create-inspection.dto.js';
 import { CreateIncidentDto } from './dto/create-incident.dto.js';
+import {
+  PaginatedResult,
+  clampLimit,
+  decodeCursor,
+  cursorWhereDesc,
+  buildPage,
+} from './pagination.util.js';
 
 export interface AssetFilters {
   type?: AssetType;
   riskLevel?: RiskLevel;
   district?: string;
 }
+
+/** Pagination + filter options for the list endpoint. */
+export interface AssetListOptions extends AssetFilters {
+  limit?: number;
+  cursor?: string;
+}
+
+/** Lightweight row shape returned by the spatial map endpoints. */
+export interface SpatialAsset {
+  id: string;
+  externalId: string | null;
+  type: AssetType;
+  name: string;
+  condition: number;
+  riskLevel: RiskLevel;
+  locationLat: number | null;
+  locationLng: number | null;
+}
+
+/** SpatialAsset + distance from the query point (for /assets/near). */
+export interface NearAsset extends SpatialAsset {
+  distanceMeters: number;
+}
+
+/** Cluster centroid + member count returned by /assets/clusters. */
+export interface AssetCluster {
+  lat: number;
+  lng: number;
+  count: number;
+}
+
+const SPATIAL_WITHIN_DEFAULT_LIMIT = 2000;
+const SPATIAL_NEAR_DEFAULT_LIMIT = 1000;
+const SPATIAL_NEAR_DEFAULT_RADIUS = 500; // meters
+const SPATIAL_CLUSTER_DEFAULT_GRID = 0.01; // degrees (~1km at this latitude)
 
 export interface AssetStats {
   total: number;
@@ -61,17 +103,45 @@ export class AssetsService {
   // List / find
   // -----------------------------------------------------------------------
 
-  async findAll(tenantId: string, filters: AssetFilters = {}): Promise<Asset[]> {
+  /**
+   * List assets for a tenant.
+   *
+   * Backward-compatible response shape:
+   *  - No `limit` supplied  => returns a plain `Asset[]` (unchanged legacy behavior,
+   *    ordered riskLevel desc, then name asc — what the current frontend expects).
+   *  - `limit` supplied      => returns a `{ data, nextCursor, total }` envelope using
+   *    stable cursor pagination ordered by `createdAt desc, id desc`.
+   */
+  async findAll(
+    tenantId: string,
+    options: AssetListOptions = {},
+  ): Promise<Asset[] | PaginatedResult<Asset>> {
     const resolvedTenantId = tenantId || 'meridian-tenant-id';
     const where: Record<string, unknown> = { tenantId: resolvedTenantId };
-    if (filters.type) where['type'] = filters.type;
-    if (filters.riskLevel) where['riskLevel'] = filters.riskLevel;
-    if (filters.district) where['district'] = filters.district;
+    if (options.type) where['type'] = options.type;
+    if (options.riskLevel) where['riskLevel'] = options.riskLevel;
+    if (options.district) where['district'] = options.district;
 
-    return this.prisma.asset.findMany({
-      where,
-      orderBy: [{ riskLevel: 'desc' }, { name: 'asc' }],
-    });
+    // Legacy array mode — no pagination requested.
+    if (options.limit === undefined) {
+      return this.prisma.asset.findMany({
+        where,
+        orderBy: [{ riskLevel: 'desc' }, { name: 'asc' }],
+      });
+    }
+
+    // Paginated envelope mode.
+    const limit = clampLimit(options.limit);
+    const cursor = decodeCursor(options.cursor);
+    const [rows, total] = await Promise.all([
+      this.prisma.asset.findMany({
+        where: { ...where, ...cursorWhereDesc(cursor) },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+      }),
+      this.prisma.asset.count({ where }),
+    ]);
+    return buildPage(rows, limit, total);
   }
 
   async findById(tenantId: string, id: string) {
@@ -176,6 +246,151 @@ export class AssetsService {
       this.prisma.asset.count({ where: { tenantId: resolvedTenantId, riskLevel: RiskLevel.OK } }),
     ]);
     return { total, critical, elevated, watch, ok };
+  }
+
+  // -----------------------------------------------------------------------
+  // Spatial (PostGIS) — powered by the geometry(Point,4326) `geom` column +
+  // GIST index. All raw SQL uses Prisma.sql tagged templates so every numeric
+  // input is bound as a real parameter ($1, $2, ...), never string-concatenated.
+  // Inputs are additionally clamped to sane ranges before binding.
+  // -----------------------------------------------------------------------
+
+  /**
+   * Assets whose point geometry falls inside the bounding box (n/s/e/w degrees).
+   * Uses ST_MakeEnvelope(west, south, east, north, 4326) + ST_Within, so the
+   * GIST index on `geom` is used. Returns lightweight rows for map rendering.
+   */
+  async findWithinBbox(
+    tenantId: string,
+    bbox: { n: number; s: number; e: number; w: number },
+    limit?: number,
+  ): Promise<SpatialAsset[]> {
+    const resolvedTenantId = tenantId || 'meridian-tenant-id';
+    const cap = clampLimit(limit, SPATIAL_WITHIN_DEFAULT_LIMIT);
+    // Normalize the envelope so callers can pass corners in any order.
+    const west = Math.min(bbox.w, bbox.e);
+    const east = Math.max(bbox.w, bbox.e);
+    const south = Math.min(bbox.s, bbox.n);
+    const north = Math.max(bbox.s, bbox.n);
+
+    return this.prisma.$queryRaw<SpatialAsset[]>(Prisma.sql`
+      SELECT
+        id,
+        "externalId",
+        type,
+        name,
+        condition,
+        "riskLevel",
+        "locationLat",
+        "locationLng"
+      FROM "Asset"
+      WHERE "tenantId" = ${resolvedTenantId}
+        AND geom IS NOT NULL
+        AND ST_Within(
+          geom,
+          ST_MakeEnvelope(${west}, ${south}, ${east}, ${north}, 4326)
+        )
+      LIMIT ${cap}
+    `);
+  }
+
+  /**
+   * Assets within `radius` meters of (lat,lng), nearest first.
+   * Uses ST_DWithin on geography casts (true metric distance) so the GIST index
+   * is still leveraged, and ST_Distance(geography) for the returned distance.
+   */
+  async findNear(
+    tenantId: string,
+    lat: number,
+    lng: number,
+    radius?: number,
+    limit?: number,
+  ): Promise<NearAsset[]> {
+    const resolvedTenantId = tenantId || 'meridian-tenant-id';
+    const radiusMeters = this.clampNumber(
+      radius ?? SPATIAL_NEAR_DEFAULT_RADIUS,
+      1,
+      50000,
+    );
+    const cap = clampLimit(limit, SPATIAL_NEAR_DEFAULT_LIMIT);
+    // ST_MakePoint takes (lng, lat); 4326 = WGS84.
+    const point = Prisma.sql`ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography`;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<SpatialAsset & { distanceMeters: number }>
+    >(Prisma.sql`
+      SELECT
+        id,
+        "externalId",
+        type,
+        name,
+        condition,
+        "riskLevel",
+        "locationLat",
+        "locationLng",
+        ST_Distance(geom::geography, ${point}) AS "distanceMeters"
+      FROM "Asset"
+      WHERE "tenantId" = ${resolvedTenantId}
+        AND geom IS NOT NULL
+        AND ST_DWithin(geom::geography, ${point}, ${radiusMeters})
+      ORDER BY geom::geography <-> ${point}
+      LIMIT ${cap}
+    `);
+
+    // distanceMeters arrives as a numeric/string from PG — coerce + round.
+    return rows.map((r) => ({
+      ...r,
+      distanceMeters: Math.round(Number(r.distanceMeters) * 100) / 100,
+    }));
+  }
+
+  /**
+   * Server-side clustering for low-zoom map rendering. Snaps each point to a
+   * `grid`-degree lattice with ST_SnapToGrid, then GROUP BYs the snapped cell
+   * and returns the centroid (mean lat/lng) + member count per cell.
+   */
+  async clusters(
+    tenantId: string,
+    bbox: { n: number; s: number; e: number; w: number },
+    grid?: number,
+  ): Promise<AssetCluster[]> {
+    const resolvedTenantId = tenantId || 'meridian-tenant-id';
+    const cell = this.clampNumber(grid ?? SPATIAL_CLUSTER_DEFAULT_GRID, 0.0001, 1);
+    const west = Math.min(bbox.w, bbox.e);
+    const east = Math.max(bbox.w, bbox.e);
+    const south = Math.min(bbox.s, bbox.n);
+    const north = Math.max(bbox.s, bbox.n);
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{ lat: number; lng: number; count: bigint | number }>
+    >(Prisma.sql`
+      SELECT
+        AVG("locationLat") AS lat,
+        AVG("locationLng") AS lng,
+        COUNT(*) AS count
+      FROM "Asset"
+      WHERE "tenantId" = ${resolvedTenantId}
+        AND geom IS NOT NULL
+        AND ST_Within(
+          geom,
+          ST_MakeEnvelope(${west}, ${south}, ${east}, ${north}, 4326)
+        )
+      GROUP BY ST_SnapToGrid(geom, ${cell})
+      ORDER BY count DESC
+    `);
+
+    // COUNT(*) is a bigint in PG -> comes back as bigint/string; normalize to number.
+    return rows.map((r) => ({
+      lat: Number(r.lat),
+      lng: Number(r.lng),
+      count: Number(r.count),
+    }));
+  }
+
+  /** Clamp a finite number into [min, max]; non-finite falls back to min. */
+  private clampNumber(n: number, min: number, max: number): number {
+    if (!Number.isFinite(n)) return min;
+    return Math.min(max, Math.max(min, n));
   }
 
   // -----------------------------------------------------------------------

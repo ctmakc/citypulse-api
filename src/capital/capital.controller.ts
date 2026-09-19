@@ -5,6 +5,7 @@ import {
   Patch,
   Param,
   Body,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CapitalService } from './capital.service';
 import { CreateCapitalProjectDto } from './dto/create-capital-project.dto';
 import { UpdateCapitalProjectDto } from './dto/update-capital-project.dto';
+import { ListCapitalDto } from './dto/list-capital.dto';
 
 @ApiTags('capital')
 @ApiBearerAuth()
@@ -22,9 +24,14 @@ export class CapitalController {
   constructor(private service: CapitalService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all capital projects for the tenant' })
-  findAll(@Request() req: any) {
-    return this.service.findAll(req.user.tenantId);
+  @ApiOperation({
+    summary: 'List capital projects for the tenant',
+    description:
+      'Backward compatible: no `limit` => plain array (legacy); `limit` => ' +
+      'paginated envelope { data, nextCursor, total }.',
+  })
+  findAll(@Request() req: any, @Query() query: ListCapitalDto) {
+    return this.service.findAll(req.user.tenantId, query);
   }
 
   @Get('stats')
